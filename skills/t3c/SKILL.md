@@ -1,5 +1,6 @@
 ---
 name: t3c
+disable-model-invocation: true
 description: 使用 t3c 在 macOS 上搜索 Things 3 待办的标题、正文和检查清单，并按 ID 标记完成。适用于查找待办或完成指定待办的请求。
 ---
 
