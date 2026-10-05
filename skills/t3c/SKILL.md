@@ -28,13 +28,18 @@ t3c search 'weekly review' --json --limit 20 --offset 0
 
 ```sh
 t3c complete '<ID>' --json
+t3c complete 'ID1' 'ID2' 'ID3' --json
 ```
 
-若同名结果有多条且上下文无法确定目标，先让用户选择；不要按标题猜测 ID，也不要批量完成搜索结果。
+若同名结果有多条且上下文无法确定目标，先让用户选择；不要按标题猜测 ID，不要自动把搜索命中全量转成完成操作；只有用户明确授权的具体 ID 才能传给 `complete`。
 
-- 成功返回 `id`、`title`、`status: "completed"` 和 `changed`。`changed: false` 表示目标已经完成，不是失败。
+- 单 ID 成功返回 `id`、`title`、`status: "completed"` 和 `changed`。`changed: false` 表示目标已经完成，不是失败。
 - 命令会等待完成状态验证，不需要额外添加等待选项。
-- 只支持单个待办，不支持项目、检查清单项、已取消、废纸篓内容或重复规则模板。重复任务使用具体实例 ID。
+- 支持一个或多个完整待办 ID，按首次出现顺序去重、逐条完成并验证，失败后继续；不支持项目、检查清单项、已取消、废纸篓内容或重复规则模板。重复任务使用具体实例 ID。
+- 多 ID 输入始终使用批量 JSON，即使去重后只剩一项。`results` 按处理顺序包含每个 ID：`outcome: "succeeded"` 附带单 ID 成功字段；`"failed"` 或 `"unconfirmed"` 附带 `id` 和 `error`。`summary.succeeded`、`summary.failed`、`summary.unconfirmed` 按去重后的 ID 汇总；已完成项也是成功。
+- 全部成功退出码为 `0`；存在失败或未确认项为 `1`。批量 `--json` 在退出码 `1` 时仍须解析 stdout，逐项汇报成功、失败及未确认 ID，不能只看退出码宣称全部失败。单 ID 运行错误仍仅在 stderr 输出文字，stdout 为空；参数错误为退出码 `2`，不返回结果 JSON。
+- 部分成功不会回滚。不要重新提交成功项，也不要重跑整个批次；失败项先处理具体原因，未确认项先查询状态。不要解析 `error` 文字来决定结果类别，使用 `outcome`。
+- 超时后命令会只读回查同一 ID 的 Things 和数据库状态，不重试写入；恢复验证成功的 `changed: true` 表示观察到状态变化，不能归因到某个并发操作者。
 - 超时或提示无法确认时，操作可能已生效；先用 `search --include-completed --json` 查找并核对同一 ID，不盲目重试或宣称失败。若仍无法确定，说明状态未确认。
 
 搜索只读本地数据库，完成操作通过 Things 执行；无需 Token 或 Shortcuts。自动化权限被拒绝时，提示用户在 macOS「系统设置 → 隐私与安全性 → 自动化」中允许调用方控制 Things。

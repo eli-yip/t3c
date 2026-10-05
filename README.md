@@ -57,15 +57,33 @@ T3C_DATABASE='/path/to/main.sqlite' t3c search weibo
 ```sh
 t3c complete <ID>
 t3c complete <ID> --json
+t3c complete ID1 ID2 ID3 --json
 ```
 
 确认 Things 和本地数据库中的状态已完成后才返回成功。已经完成的待办直接成功，JSON 中 `changed` 为 `false`，不重新设置完成时间。
 
-只接受单个待办 ID；项目、检查清单项、已取消、废纸篓内容及重复规则模板不能作为目标。重复任务请使用具体实例的 ID。
+只接受明确的完整待办 ID；项目、检查清单项、已取消、废纸篓内容及重复规则模板不能作为目标。重复任务请使用具体实例的 ID。
 
 首次运行可能需要在 macOS「系统设置 → 隐私与安全性 → 自动化」中允许调用方控制 Things。无需 Token；操作通过 Things 执行，不直接写数据库。`T3C_DATABASE` 只能指向本机自动发现的同一数据库。
 
-如果提示无法确认完成状态，请先查看 Things；操作可能已经生效。
+多个 ID 按首次出现顺序去重、逐条执行并验证；一条失败后继续处理其余条目，成功项不会回滚。传入多个 ID 时始终返回批量格式，即使去重后只有一项：
+
+```json
+{
+  "results": [
+    {"outcome": "succeeded", "id": "ID1", "title": "写周报", "status": "completed", "changed": true},
+    {"outcome": "failed", "id": "ID2", "error": "to-do ID not found: ID2"},
+    {"outcome": "unconfirmed", "id": "ID3", "error": "completion could not be confirmed; the to-do may already be completed"}
+  ],
+  "summary": {"succeeded": 1, "failed": 1, "unconfirmed": 1}
+}
+```
+
+`failed` 表示明确失败，例如目标不允许完成、数据库不符合要求或自动化权限被拒绝；`unconfirmed` 表示操作可能已生效但未能验证。超时后会按同一 ID 回查 Things 和数据库，不重复发送完成操作。恢复验证成功时，`changed: true` 表示本次观察到从未完成变为完成，不能排除期间被其他操作完成。
+
+全部成功退出码为 `0`；有失败或未确认项时为 `1`，批量 `--json` 仍在 stdout 输出完整结果。汇总按去重后的 ID 计数，`changed: false` 也算成功。单 ID 保留原来的成功 JSON；运行错误仍是 stderr 文字、stdout 为空、退出码为 `1`。参数错误沿用 clap 提示和退出码 `2`。
+
+遇到部分成功，应逐项查看 `outcome`，不要把整个批次当作失败或重新提交所有 ID。对 `unconfirmed` 先查看 Things 并核对同一 ID；仍无法确认时保留未确认状态，不盲目重试。
 
 ## Agent 技能
 

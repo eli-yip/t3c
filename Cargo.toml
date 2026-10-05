@@ -1,6 +1,6 @@
 [package]
 name = "t3c"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Search Things 3 titles, notes, and checklists"
 
