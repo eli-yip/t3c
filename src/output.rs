@@ -73,3 +73,40 @@ fn excerpt(text: &str, query: &str) -> String {
         }
     )
 }
+
+pub fn write_completion(
+    out: &mut impl Write,
+    result: &crate::complete::Completion,
+) -> io::Result<()> {
+    writeln!(
+        out,
+        "{}: {}\nID: {}",
+        if result.changed {
+            "Completed"
+        } else {
+            "Already completed"
+        },
+        visible(&result.title),
+        visible(&result.id)
+    )
+}
+
+pub fn write_batch(out: &mut impl Write, batch: &crate::complete::Batch) -> io::Result<()> {
+    use crate::complete::ItemResult;
+    for item in &batch.results {
+        match item {
+            ItemResult::Succeeded { completion } => write_completion(out, completion)?,
+            ItemResult::Failed { id, error } => {
+                writeln!(out, "Failed: {}\nID: {}", visible(error), visible(id))?
+            }
+            ItemResult::Unconfirmed { id, error } => {
+                writeln!(out, "Unconfirmed: {}\nID: {}", visible(error), visible(id))?
+            }
+        }
+    }
+    writeln!(
+        out,
+        "{} succeeded, {} failed, {} unconfirmed",
+        batch.summary.succeeded, batch.summary.failed, batch.summary.unconfirmed
+    )
+}

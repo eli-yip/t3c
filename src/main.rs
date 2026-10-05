@@ -17,11 +17,14 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Mark a to-do complete by its full ID and verify the result
+    /// Complete one or more full to-do IDs, in order, and verify each result
+    #[command(
+        after_help = "Duplicate IDs are processed once. Each ID is attempted even if another fails.\nWith multiple input IDs, --json returns results and succeeded/failed/unconfirmed counts.\nExit code: 0 if all succeed, 1 for any failure or unconfirmed result.\nSingle-ID errors remain text on stderr, including with --json."
+    )]
     Complete {
-        #[arg(value_parser = nonblank)]
-        id: String,
-        /// Output the verified completion as JSON
+        #[arg(required = true, num_args = 1.., value_name = "ID", value_parser = nonblank)]
+        ids: Vec<String>,
+        /// Output the completion or batch results as JSON
         #[arg(long)]
         json: bool,
     },
@@ -58,7 +61,8 @@ fn nonblank(value: &str) -> Result<String, String> {
     }
 }
 
-fn run(cli: Cli) -> Result<()> {
+fn run(cli: Cli) -> Result<ExitCode> {
+    let mut exit = ExitCode::SUCCESS;
     let mut out = io::BufWriter::new(io::stdout().lock());
     match cli.command {
         Command::Search {
@@ -87,33 +91,36 @@ fn run(cli: Cli) -> Result<()> {
                 output::write(&mut out, &result)?;
             }
         }
-        Command::Complete { id, json } => {
-            let result = complete::run(&id)?;
-            if json {
-                serde_json::to_writer_pretty(&mut out, &result)?;
-                writeln!(out)?;
+        Command::Complete { ids, json } => {
+            if ids.len() == 1 {
+                let result = complete::run(&ids[0])?;
+                if json {
+                    serde_json::to_writer_pretty(&mut out, &result)?;
+                    writeln!(out)?;
+                } else {
+                    output::write_completion(&mut out, &result)?;
+                }
             } else {
-                writeln!(
-                    out,
-                    "{}: {}\nID: {}",
-                    if result.changed {
-                        "Completed"
-                    } else {
-                        "Already completed"
-                    },
-                    output::visible(&result.title),
-                    output::visible(&result.id)
-                )?;
+                let result = complete::batch(&ids, complete::run);
+                if !result.is_success() {
+                    exit = ExitCode::FAILURE;
+                }
+                if json {
+                    serde_json::to_writer_pretty(&mut out, &result)?;
+                    writeln!(out)?;
+                } else {
+                    output::write_batch(&mut out, &result)?;
+                }
             }
         }
     }
     out.flush()?;
-    Ok(())
+    Ok(exit)
 }
 
 fn main() -> ExitCode {
     match run(Cli::parse()) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(exit) => exit,
         Err(error)
             if error.chain().any(|cause| {
                 cause

@@ -1,5 +1,6 @@
 use std::{
-    fs,
+    collections::HashSet,
+    fmt, fs,
     path::Path,
     process::{Command, Stdio},
     thread,
@@ -20,6 +21,88 @@ pub struct Completion {
     pub changed: bool,
 }
 
+// Marks errors after automation may have sent the write.
+#[derive(Debug)]
+struct Unconfirmed;
+
+impl fmt::Display for Unconfirmed {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("completion could not be confirmed; the to-do may already be completed")
+    }
+}
+
+impl std::error::Error for Unconfirmed {}
+
+#[derive(Serialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum ItemResult {
+    Succeeded {
+        #[serde(flatten)]
+        completion: Completion,
+    },
+    Failed {
+        id: String,
+        error: String,
+    },
+    Unconfirmed {
+        id: String,
+        error: String,
+    },
+}
+
+#[derive(Default, Serialize)]
+pub struct Summary {
+    pub succeeded: usize,
+    pub failed: usize,
+    pub unconfirmed: usize,
+}
+
+#[derive(Serialize)]
+pub struct Batch {
+    pub results: Vec<ItemResult>,
+    pub summary: Summary,
+}
+
+impl Batch {
+    pub fn is_success(&self) -> bool {
+        self.summary.failed == 0 && self.summary.unconfirmed == 0
+    }
+}
+
+pub fn batch(ids: &[String], mut run: impl FnMut(&str) -> Result<Completion>) -> Batch {
+    let mut seen = HashSet::new();
+    let mut results = Vec::new();
+    let mut summary = Summary::default();
+    for id in ids {
+        if !seen.insert(id) {
+            continue;
+        }
+        results.push(match run(id) {
+            Ok(completion) => {
+                summary.succeeded += 1;
+                ItemResult::Succeeded { completion }
+            }
+            Err(error) => {
+                let message = format!("{error:#}");
+                if error.is::<Unconfirmed>() {
+                    summary.unconfirmed += 1;
+                    ItemResult::Unconfirmed {
+                        id: id.clone(),
+                        error: message,
+                    }
+                } else {
+                    summary.failed += 1;
+                    ItemResult::Failed {
+                        id: id.clone(),
+                        error: message,
+                    }
+                }
+            }
+        });
+    }
+    Batch { results, summary }
+}
+
 pub fn run(id: &str) -> Result<Completion> {
     let path = database::locate()?;
     // A snapshot can contain the same ID as the live database. Never use it to
@@ -28,13 +111,14 @@ pub fn run(id: &str) -> Result<Completion> {
     if fs::canonicalize(&path)? != fs::canonicalize(&live)? {
         bail!("complete requires the local Things database; T3C_DATABASE points elsewhere");
     }
-    complete(&path, id, dispatch, Duration::from_secs(5))
+    complete(&path, id, dispatch, inspect, Duration::from_secs(5))
 }
 
 fn complete(
     path: &Path,
     id: &str,
     dispatch: impl FnOnce(&str) -> Result<bool>,
+    inspect: impl FnOnce(&str) -> Result<bool>,
     verify_timeout: Duration,
 ) -> Result<Completion> {
     let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
@@ -76,10 +160,28 @@ fn complete(
         3 => false,
         2 => bail!("to-do is canceled: {id}"),
         0 => {
-            let changed = dispatch(id)?;
-            verify(&connection, id, verify_timeout)
-                .context("completion was sent, but its result could not be confirmed; the to-do may already be completed")?;
-            changed
+            match dispatch(id) {
+                Ok(changed) => {
+                    verify(&connection, id, verify_timeout).context(Unconfirmed)?;
+                    changed
+                }
+                Err(error) if error.is::<Unconfirmed>() => {
+                    // A timeout does not cancel a write already received by Things.
+                    // Reconcile the same ID without sending another write.
+                    let things_status = inspect(id);
+                    verify(&connection, id, verify_timeout)
+                        .with_context(|| format!("{error:#}"))
+                        .context(Unconfirmed)?;
+                    if !things_status
+                        .with_context(|| format!("{error:#}"))
+                        .context(Unconfirmed)?
+                    {
+                        return Err(error);
+                    }
+                    true
+                }
+                Err(error) => return Err(error),
+            }
         }
         value => bail!("unsupported Things task status: {value}"),
     };
@@ -111,8 +213,22 @@ fn verify(connection: &Connection, id: &str, timeout: Duration) -> Result<()> {
 }
 
 fn dispatch(id: &str) -> Result<bool> {
+    let output = automate(include_str!("complete.applescript"), id)?;
+    match output.as_slice().trim_ascii() {
+        b"changed" => Ok(true),
+        b"unchanged" => Ok(false),
+        _ => Err(anyhow::anyhow!("Things returned an unexpected response")).context(Unconfirmed),
+    }
+}
+
+fn inspect(id: &str) -> Result<bool> {
+    let output = automate(include_str!("completion-status.applescript"), id)?;
+    Ok(output.as_slice().trim_ascii() == b"completed")
+}
+
+fn automate(script: &str, id: &str) -> Result<Vec<u8>> {
     let mut child = Command::new("/usr/bin/osascript")
-        .args(["-e", include_str!("complete.applescript"), "--", id])
+        .args(["-e", script, "--", id])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -128,17 +244,17 @@ fn dispatch(id: &str) -> Result<bool> {
                 let _ = child.wait();
                 if let Err(error) = result {
                     return Err(error)
-                        .context("cannot wait for Things automation; completion is unconfirmed");
+                        .context("cannot wait for Things automation")
+                        .context(Unconfirmed);
                 }
-                bail!(
-                    "Things automation timed out; completion is unconfirmed. Check Things before retrying"
-                );
+                return Err(anyhow::anyhow!("Things automation timed out")).context(Unconfirmed);
             }
         }
     }
     let output = child
         .wait_with_output()
-        .context("cannot read Things automation result; completion is unconfirmed")?;
+        .context("cannot read Things automation result")
+        .context(Unconfirmed)?;
     if !output.status.success() {
         let message = String::from_utf8_lossy(&output.stderr);
         if message.contains("-1743") {
@@ -146,16 +262,13 @@ fn dispatch(id: &str) -> Result<bool> {
                 "macOS denied automation access to Things; allow it in System Settings > Privacy & Security > Automation"
             );
         }
-        bail!(
-            "Things automation failed; completion is unconfirmed: {}",
+        return Err(anyhow::anyhow!(
+            "Things automation failed: {}",
             message.trim()
-        );
+        ))
+        .context(Unconfirmed);
     }
-    match output.stdout.as_slice().trim_ascii() {
-        b"changed" => Ok(true),
-        b"unchanged" => Ok(false),
-        _ => bail!("Things returned an unexpected response; completion is unconfirmed"),
-    }
+    Ok(output.stdout)
 }
 
 #[cfg(test)]
@@ -192,6 +305,7 @@ mod tests {
                 writer.execute("UPDATE TMTask SET status=3 WHERE uuid=?1", [id])?;
                 Ok(true)
             },
+            |_| panic!("must not reconcile acknowledged completion"),
             Duration::ZERO,
         )
         .unwrap();
@@ -207,6 +321,7 @@ mod tests {
             &path,
             "a",
             |_| panic!("must not dispatch again"),
+            |_| panic!("must not reconcile acknowledged completion"),
             Duration::ZERO,
         )
         .unwrap();
@@ -224,6 +339,7 @@ mod tests {
                     &dir.path().join("main.sqlite"),
                     id,
                     |_| panic!("must not dispatch"),
+                    |_| panic!("must not reconcile rejected target"),
                     Duration::ZERO
                 )
                 .is_err()
@@ -235,10 +351,147 @@ mod tests {
     fn dispatch_and_verification_failures_never_report_success() {
         let (dir, _writer) = fixture();
         let path = dir.path().join("main.sqlite");
-        assert!(complete(&path, "a", |_| bail!("permission denied"), Duration::ZERO).is_err());
-        let unconfirmed = complete(&path, "a", |_| Ok(true), Duration::ZERO)
-            .err()
-            .unwrap();
+        assert!(
+            complete(
+                &path,
+                "a",
+                |_| bail!("permission denied"),
+                |_| panic!("must not inspect"),
+                Duration::ZERO
+            )
+            .is_err()
+        );
+        let unconfirmed = complete(
+            &path,
+            "a",
+            |_| Ok(true),
+            |_| panic!("must not inspect"),
+            Duration::ZERO,
+        )
+        .err()
+        .unwrap();
         assert!(unconfirmed.to_string().contains("could not be confirmed"));
+    }
+
+    #[test]
+    fn batch_preserves_order_deduplicates_and_continues_after_failure_and_uncertainty() {
+        let (dir, writer) = fixture();
+        let ids = ["a", "missing", "a", "done", "b", "canceled"].map(str::to_owned);
+        let mut dispatched = Vec::new();
+        let result = batch(&ids, |id| {
+            complete(
+                &dir.path().join("main.sqlite"),
+                id,
+                |id| {
+                    dispatched.push(id.to_owned());
+                    if id == "a" {
+                        writer.execute("UPDATE TMTask SET status=3 WHERE uuid=?1", [id])?;
+                    }
+                    Ok(true)
+                },
+                |_| panic!("acknowledged write"),
+                Duration::ZERO,
+            )
+        });
+        assert_eq!(dispatched, ["a", "b"]);
+        assert!(!result.is_success());
+        let json = serde_json::to_value(result).unwrap();
+        assert_eq!(
+            json["summary"],
+            serde_json::json!({"succeeded":2,"failed":2,"unconfirmed":1})
+        );
+        assert_eq!(
+            json["results"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v["id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["a", "missing", "done", "b", "canceled"]
+        );
+        assert_eq!(json["results"][0]["outcome"], "succeeded");
+        assert_eq!(json["results"][1]["outcome"], "failed");
+        assert_eq!(json["results"][2]["changed"], false);
+        assert_eq!(json["results"][3]["outcome"], "unconfirmed");
+    }
+
+    #[test]
+    fn batch_completes_each_id_before_starting_the_next() {
+        let (dir, writer) = fixture();
+        let result = batch(&["a".into(), "b".into()], |id| {
+            complete(
+                &dir.path().join("main.sqlite"),
+                id,
+                |id| {
+                    if id == "b" {
+                        assert_eq!(
+                            writer.query_row(
+                                "SELECT status FROM TMTask WHERE uuid='a'",
+                                [],
+                                |r| r.get::<_, i64>(0)
+                            )?,
+                            3
+                        );
+                    }
+                    writer.execute("UPDATE TMTask SET status=3 WHERE uuid=?1", [id])?;
+                    Ok(true)
+                },
+                |_| panic!("acknowledged write"),
+                Duration::ZERO,
+            )
+        });
+        assert!(result.is_success());
+        assert_eq!(result.summary.succeeded, 2);
+    }
+
+    #[test]
+    fn ambiguous_dispatch_reconciles_same_id_without_retrying_the_write() {
+        // Both Things and a fresh database snapshot must confirm completion.
+        for (database_completed, things_completed) in
+            [(true, true), (true, false), (false, true), (false, false)]
+        {
+            let (dir, writer) = fixture();
+            let mut writes = 0;
+            let result = complete(
+                &dir.path().join("main.sqlite"),
+                "a",
+                |id| {
+                    writes += 1;
+                    if database_completed {
+                        writer.execute("UPDATE TMTask SET status=3 WHERE uuid=?1", [id])?;
+                    }
+                    Err(anyhow::anyhow!("automation timed out")).context(Unconfirmed)
+                },
+                |id| {
+                    assert_eq!(id, "a");
+                    Ok(things_completed)
+                },
+                Duration::ZERO,
+            );
+            assert_eq!(writes, 1);
+            if database_completed && things_completed {
+                assert!(result.unwrap().changed);
+            } else {
+                let error = result.err().unwrap();
+                assert!(error.is::<Unconfirmed>());
+                assert!(format!("{error:#}").contains("automation timed out"));
+            }
+        }
+    }
+
+    #[test]
+    fn failed_readback_after_ambiguous_write_remains_unconfirmed() {
+        let (dir, writer) = fixture();
+        let result = complete(
+            &dir.path().join("main.sqlite"),
+            "a",
+            |id| {
+                writer.execute("UPDATE TMTask SET status=3 WHERE uuid=?1", [id])?;
+                Err(anyhow::anyhow!("automation timed out")).context(Unconfirmed)
+            },
+            |_| bail!("readback unavailable"),
+            Duration::ZERO,
+        );
+        assert!(result.err().unwrap().is::<Unconfirmed>());
     }
 }
