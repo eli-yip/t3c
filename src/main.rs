@@ -32,6 +32,9 @@ enum Command {
         /// Include to-dos in the trash, including trashed projects
         #[arg(long)]
         include_trashed: bool,
+        /// Include completed to-dos
+        #[arg(long)]
+        include_completed: bool,
     },
 }
 
@@ -50,9 +53,17 @@ fn run(cli: Cli) -> Result<()> {
         limit,
         offset,
         include_trashed,
+        include_completed,
     } = cli.command;
     let path = database::locate()?;
-    let result = database::search(&path, &query, limit, offset, include_trashed)?;
+    let result = database::search(
+        &path,
+        &query,
+        limit,
+        offset,
+        include_trashed,
+        include_completed,
+    )?;
     let mut out = io::BufWriter::new(io::stdout().lock());
     if json {
         serde_json::to_writer_pretty(&mut out, &result)?;

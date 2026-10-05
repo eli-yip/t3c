@@ -85,7 +85,10 @@ fn searches_all_fields_and_statuses_from_live_wal_without_duplicate_todos() {
         .connection
         .execute("UPDATE TMTask SET notes=?1 WHERE uuid='a'", [&long_note])
         .unwrap();
-    let result = fixture.json(&["weibo"]);
+    let default = fixture.json(&["weibo"]);
+    assert_eq!(ids(&default), ["a", "c"]);
+    assert_eq!(default["total"], 2);
+    let result = fixture.json(&["weibo", "--include-completed"]);
     assert_eq!(ids(&result), ["a", "b", "c"]);
     assert_eq!(result["total"], 3);
     assert_eq!(result["count"], 3);
@@ -107,16 +110,23 @@ fn searches_all_fields_and_statuses_from_live_wal_without_duplicate_todos() {
 #[test]
 fn pagination_counts_todos_and_respects_parent_trash() {
     let fixture = Fixture::new();
-    let page = fixture.json(&["weibo", "--limit", "1", "--offset", "1"]);
+    let page = fixture.json(&[
+        "weibo",
+        "--include-completed",
+        "--limit",
+        "1",
+        "--offset",
+        "1",
+    ]);
     assert_eq!(ids(&page), ["b"]);
     assert_eq!(page["total"], 3);
     assert_eq!(page["has_more"], true);
-    let empty = fixture.json(&["weibo", "--offset", "99"]);
+    let empty = fixture.json(&["weibo", "--include-completed", "--offset", "99"]);
     assert_eq!(empty["count"], 0);
     assert_eq!(empty["total"], 3);
     assert_eq!(empty["has_more"], false);
     let all = fixture.json(&["weibo", "--include-trashed"]);
-    assert_eq!(ids(&all), ["trash", "child", "a", "b", "c"]);
+    assert_eq!(ids(&all), ["trash", "child", "a", "c"]);
     assert_eq!(all["items"][1]["trashed"], true);
 }
 
