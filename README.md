@@ -66,3 +66,16 @@ t3c complete <ID> --json
 首次运行可能需要在 macOS「系统设置 → 隐私与安全性 → 自动化」中允许调用方控制 Things。无需 Token；操作通过 Things 执行，不直接写数据库。`T3C_DATABASE` 只能指向本机自动发现的同一数据库。
 
 如果提示无法确认完成状态，请先查看 Things；操作可能已经生效。
+
+## Agent 技能
+
+项目提供 [t3c 技能](skills/t3c/SKILL.md)，指导 Agent 搜索和完成待办，优先使用 `--json`。
+
+先安装 t3c 并确保 Agent 能在命令行运行它，再将整个 `skills/t3c` 目录安装到所用 Agent 的技能目录，保留其中的 `agents/openai.yaml`。
+
+技能仅允许用户显式调用，已关闭 Codex 和 Claude Code 的模型主动调用。安装后在对话中使用：
+
+- Codex：`$t3c 搜索包含 weibo 的未完成待办`
+- Claude Code：`/t3c 搜索包含 weibo 的未完成待办`
+
+需要完成某项时，明确指定目标，例如「使用 t3c 技能，将 ID 为 abc123 的待办标记完成」。
