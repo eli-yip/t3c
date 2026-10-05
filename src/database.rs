@@ -107,6 +107,7 @@ WITH hits AS (
     UNION ALL
     SELECT task, 'checklist', title, uuid, status = 3, 2, "index"
     FROM TMChecklistItem WHERE instr(lower(title), lower(?1)) > 0
+      AND (?3 OR status != 3)
 ), matched AS (
     SELECT t.uuid, coalesce(t.title, '') AS title, t.status,
            (coalesce(t.trashed, 0) != 0 OR coalesce(p.trashed, 0) != 0) AS trashed,
@@ -118,6 +119,7 @@ WITH hits AS (
     LEFT JOIN TMArea a ON a.uuid = CASE WHEN p.uuid IS NOT NULL THEN p.area ELSE t.area END
     WHERE t.type = 0
       AND (?3 OR t.status != 3)
+      AND (?4 OR t.status != 2)
       AND (?2 OR (coalesce(t.trashed, 0) = 0 AND coalesce(p.trashed, 0) = 0))
       AND EXISTS (SELECT 1 FROM hits WHERE hits.task = t.uuid)
 )
@@ -130,6 +132,7 @@ pub fn search(
     offset: i64,
     include_trashed: bool,
     include_completed: bool,
+    include_canceled: bool,
 ) -> Result<SearchResult> {
     let mut connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .with_context(|| format!("cannot open Things database read-only: {}", path.display()))?;
@@ -138,13 +141,13 @@ pub fn search(
     let total: i64 = transaction
         .query_row(
             &format!("{MATCHED} SELECT count(*) FROM matched"),
-            params![query, include_trashed, include_completed],
+            params![query, include_trashed, include_completed, include_canceled],
             |row| row.get(0),
         )
         .context("cannot search Things titles, notes, and checklists")?;
     let sql = format!(
         r#"{MATCHED}, page AS (
-        SELECT * FROM matched ORDER BY modified DESC, uuid ASC LIMIT ?4 OFFSET ?5
+        SELECT * FROM matched ORDER BY modified DESC, uuid ASC LIMIT ?5 OFFSET ?6
     )
     SELECT page.*, hits.field, hits.text, hits.checklist_id, hits.completed
     FROM page JOIN hits ON hits.task = page.uuid
@@ -158,6 +161,7 @@ pub fn search(
         query,
         include_trashed,
         include_completed,
+        include_canceled,
         limit.unwrap_or(-1),
         offset
     ])?;

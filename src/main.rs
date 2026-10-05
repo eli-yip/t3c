@@ -32,9 +32,12 @@ enum Command {
         /// Include to-dos in the trash, including trashed projects
         #[arg(long)]
         include_trashed: bool,
-        /// Include completed to-dos
+        /// Include completed to-dos and checked checklist items
         #[arg(long)]
         include_completed: bool,
+        /// Include canceled to-dos
+        #[arg(long)]
+        include_canceled: bool,
     },
 }
 
@@ -54,6 +57,7 @@ fn run(cli: Cli) -> Result<()> {
         offset,
         include_trashed,
         include_completed,
+        include_canceled,
     } = cli.command;
     let path = database::locate()?;
     let result = database::search(
@@ -63,6 +67,7 @@ fn run(cli: Cli) -> Result<()> {
         offset,
         include_trashed,
         include_completed,
+        include_canceled,
     )?;
     let mut out = io::BufWriter::new(io::stdout().lock());
     if json {

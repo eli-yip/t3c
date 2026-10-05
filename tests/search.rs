@@ -86,9 +86,9 @@ fn searches_all_fields_and_statuses_from_live_wal_without_duplicate_todos() {
         .execute("UPDATE TMTask SET notes=?1 WHERE uuid='a'", [&long_note])
         .unwrap();
     let default = fixture.json(&["weibo"]);
-    assert_eq!(ids(&default), ["a", "c"]);
-    assert_eq!(default["total"], 2);
-    let result = fixture.json(&["weibo", "--include-completed"]);
+    assert_eq!(ids(&default), ["a"]);
+    assert_eq!(default["total"], 1);
+    let result = fixture.json(&["weibo", "--include-completed", "--include-canceled"]);
     assert_eq!(ids(&result), ["a", "b", "c"]);
     assert_eq!(result["total"], 3);
     assert_eq!(result["count"], 3);
@@ -113,6 +113,7 @@ fn pagination_counts_todos_and_respects_parent_trash() {
     let page = fixture.json(&[
         "weibo",
         "--include-completed",
+        "--include-canceled",
         "--limit",
         "1",
         "--offset",
@@ -121,12 +122,18 @@ fn pagination_counts_todos_and_respects_parent_trash() {
     assert_eq!(ids(&page), ["b"]);
     assert_eq!(page["total"], 3);
     assert_eq!(page["has_more"], true);
-    let empty = fixture.json(&["weibo", "--include-completed", "--offset", "99"]);
+    let empty = fixture.json(&[
+        "weibo",
+        "--include-completed",
+        "--include-canceled",
+        "--offset",
+        "99",
+    ]);
     assert_eq!(empty["count"], 0);
     assert_eq!(empty["total"], 3);
     assert_eq!(empty["has_more"], false);
     let all = fixture.json(&["weibo", "--include-trashed"]);
-    assert_eq!(ids(&all), ["trash", "child", "a", "c"]);
+    assert_eq!(ids(&all), ["trash", "child", "a"]);
     assert_eq!(all["items"][1]["trashed"], true);
 }
 
@@ -136,7 +143,7 @@ fn treats_keywords_as_literal_text_including_unicode_and_sql_characters() {
     for query in ["%_", "*", "quote '", "weekly review"] {
         assert_eq!(ids(&fixture.json(&[query])), ["literal"]);
     }
-    assert_eq!(ids(&fixture.json(&["中文"])), ["c", "literal"]);
+    assert_eq!(ids(&fixture.json(&["中文"])), ["literal"]);
     assert_eq!(fixture.json(&["' OR 1=1 --"])["count"], 0);
     assert_eq!(fixture.json(&["absent"])["total"], 0);
 }
@@ -187,4 +194,36 @@ fn discovers_one_database_and_requires_selection_when_ambiguous() {
     let ambiguous = invoke();
     assert_eq!(ambiguous.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&ambiguous.stderr).contains("multiple Things databases"));
+}
+
+#[test]
+fn completion_and_cancellation_flags_are_independent_and_filter_checklist_hits() {
+    let fixture = Fixture::new();
+    fixture
+        .connection
+        .execute_batch(
+            r#"
+        INSERT INTO TMTask(uuid,title,userModificationDate) VALUES ('checked-only','Saved link',15);
+        INSERT INTO TMChecklistItem VALUES ('checked','checked-only','weibo',3,0),
+            ('checked-title','a','weibo done',3,1);
+    "#,
+        )
+        .unwrap();
+    let default = fixture.json(&["weibo"]);
+    assert_eq!(ids(&default), ["a"]);
+    assert_eq!(default["items"][0]["matches"].as_array().unwrap().len(), 3);
+    assert_eq!(
+        ids(&fixture.json(&["weibo", "--include-canceled"])),
+        ["a", "c"]
+    );
+    let completed = fixture.json(&["weibo", "--include-completed"]);
+    assert_eq!(ids(&completed), ["a", "b", "checked-only"]);
+    assert_eq!(
+        completed["items"][0]["matches"].as_array().unwrap().len(),
+        4
+    );
+    assert_eq!(completed["total"], 3);
+    let page = fixture.json(&["weibo", "--limit", "1", "--offset", "1"]);
+    assert_eq!(page["total"], 1);
+    assert_eq!(page["count"], 0);
 }
