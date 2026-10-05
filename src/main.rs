@@ -1,3 +1,4 @@
+mod complete;
 mod database;
 mod output;
 
@@ -8,7 +9,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(version, about = "Search Things 3 titles, notes, and checklists")]
+#[command(version, about = "Search and complete Things 3 to-dos")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -16,6 +17,14 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Mark a to-do complete by its full ID and verify the result
+    Complete {
+        #[arg(value_parser = nonblank)]
+        id: String,
+        /// Output the verified completion as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Find to-dos containing a literal phrase (ASCII case-insensitive)
     Search {
         #[arg(value_parser = nonblank)]
@@ -50,31 +59,53 @@ fn nonblank(value: &str) -> Result<String, String> {
 }
 
 fn run(cli: Cli) -> Result<()> {
-    let Command::Search {
-        query,
-        json,
-        limit,
-        offset,
-        include_trashed,
-        include_completed,
-        include_canceled,
-    } = cli.command;
-    let path = database::locate()?;
-    let result = database::search(
-        &path,
-        &query,
-        limit,
-        offset,
-        include_trashed,
-        include_completed,
-        include_canceled,
-    )?;
     let mut out = io::BufWriter::new(io::stdout().lock());
-    if json {
-        serde_json::to_writer_pretty(&mut out, &result)?;
-        writeln!(out)?;
-    } else {
-        output::write(&mut out, &result)?;
+    match cli.command {
+        Command::Search {
+            query,
+            json,
+            limit,
+            offset,
+            include_trashed,
+            include_completed,
+            include_canceled,
+        } => {
+            let path = database::locate()?;
+            let result = database::search(
+                &path,
+                &query,
+                limit,
+                offset,
+                include_trashed,
+                include_completed,
+                include_canceled,
+            )?;
+            if json {
+                serde_json::to_writer_pretty(&mut out, &result)?;
+                writeln!(out)?;
+            } else {
+                output::write(&mut out, &result)?;
+            }
+        }
+        Command::Complete { id, json } => {
+            let result = complete::run(&id)?;
+            if json {
+                serde_json::to_writer_pretty(&mut out, &result)?;
+                writeln!(out)?;
+            } else {
+                writeln!(
+                    out,
+                    "{}: {}\nID: {}",
+                    if result.changed {
+                        "Completed"
+                    } else {
+                        "Already completed"
+                    },
+                    output::visible(&result.title),
+                    output::visible(&result.id)
+                )?;
+            }
+        }
     }
     out.flush()?;
     Ok(())

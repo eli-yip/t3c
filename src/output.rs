@@ -41,7 +41,7 @@ pub fn write(out: &mut impl Write, result: &SearchResult) -> io::Result<()> {
 }
 
 // Keep terminal control characters inert. JSON retains the original text.
-fn visible(text: &str) -> String {
+pub fn visible(text: &str) -> String {
     let mut result = String::new();
     for character in text.chars() {
         if character.is_control() {

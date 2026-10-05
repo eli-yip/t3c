@@ -1,6 +1,6 @@
 # t3c
 
-在终端搜索 Things 3 待办的标题、正文和检查清单。
+在终端搜索 Things 3 待办的标题、正文和检查清单，并按 ID 标记完成。
 
 ```sh
 t3c search weibo
@@ -48,4 +48,21 @@ JSON 的 `total` 是分页前的匹配待办数，`count` 是本次返回数，`
 T3C_DATABASE='/path/to/main.sqlite' t3c search weibo
 ```
 
-只读本地数据，无需 Token 或 Shortcuts。搜索对象是待办，不包括项目自身的标题、正文或标签。依赖 Things 内部数据库结构，Things 更新后可能需要适配；目前仅在本机 macOS 的 Things 数据库上验证。
+搜索只读本地数据，无需 Token 或 Shortcuts。搜索对象是待办，不包括项目自身的标题、正文或标签。依赖 Things 内部数据库结构，Things 更新后可能需要适配；目前仅在本机 macOS 的 Things 数据库上验证。
+
+## 完成待办
+
+复制搜索结果中的待办 ID：
+
+```sh
+t3c complete <ID>
+t3c complete <ID> --json
+```
+
+确认 Things 和本地数据库中的状态已完成后才返回成功。已经完成的待办直接成功，JSON 中 `changed` 为 `false`，不重新设置完成时间。
+
+只接受单个待办 ID；项目、检查清单项、已取消、废纸篓内容及重复规则模板不能作为目标。重复任务请使用具体实例的 ID。
+
+首次运行可能需要在 macOS「系统设置 → 隐私与安全性 → 自动化」中允许调用方控制 Things。无需 Token；操作通过 Things 执行，不直接写数据库。`T3C_DATABASE` 只能指向本机自动发现的同一数据库。
+
+如果提示无法确认完成状态，请先查看 Things；操作可能已经生效。

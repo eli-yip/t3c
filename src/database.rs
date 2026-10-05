@@ -54,6 +54,10 @@ pub fn locate() -> Result<PathBuf> {
         }
         return Ok(path.into());
     }
+    locate_default()
+}
+
+pub fn locate_default() -> Result<PathBuf> {
     let home = env::var_os("HOME")
         .context("HOME is unset; set T3C_DATABASE to your Things database file")?;
     let root =
